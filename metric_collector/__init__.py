@@ -2,7 +2,7 @@
 Tekton pipeline's data collector
 
 """
-__version__="0.1.0"
+__version__="0.1.1"
 
 from jira import JIRA
 import os
@@ -57,7 +57,7 @@ class Collector:
         output['tektonTaskCompletedCount'] = completed_count
         output['tektonTaskFailedCount'] = failed_count
         output['tektonTaskCancelCount'] = cancelled_count
-        output.push(self.get_commit_message(repo_name=output['repo'], commit_id=output['rev']))
+        output.update(self.get_commit_message(repo_name=output['repo'], commit_id=output['rev']))
         output['fileCounts'] = self.count_file_changes(output['repo'], output['rev'])
         output['differences'] = self.get_code_diff(output['repo'], output['rev'])
         
