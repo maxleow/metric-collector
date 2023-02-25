@@ -2,14 +2,15 @@
 Tekton pipeline's data collector
 
 """
-__version__="0.1.1"
+__version__="0.1.3"
 
-from jira import JIRA
+from atlassian import Jira
 import os
 import re
 import boto3
 import json
 import difflib
+from bs4 import BeautifulSoup
 
 class Collector:
     def __init__(self):
@@ -21,7 +22,10 @@ class Collector:
         self.aws_access_key_id=os.getenv('AWS_KEY_ID')
         self.aws_secret_access_key=os.getenv('AWS_KEY')
 
-        self.jira = JIRA("https://" + jira_domain, basic_auth=(jira_email, jira_secret))
+        self.jira = Jira(
+            url=f'https://{jira_domain}',
+            username=jira_email,
+            password=jira_secret)
 
     def from_tekton_pipelineruns(self, json_file_name: str):
 
@@ -40,6 +44,7 @@ class Collector:
 
         params = {d['name']: d['value'] for d in data.get('spec')['params']}
         output.update(params)
+        output['repo_name'] = output['repo'].split("/")[-1]
 
         status_message = data.get('status')['conditions'][0]['message']
         print(status_message)
@@ -57,17 +62,91 @@ class Collector:
         output['tektonTaskCompletedCount'] = completed_count
         output['tektonTaskFailedCount'] = failed_count
         output['tektonTaskCancelCount'] = cancelled_count
-        output.update(self.get_commit_message(repo_name=output['repo'], commit_id=output['rev']))
-        output['fileCounts'] = self.count_file_changes(output['repo'], output['rev'])
-        output['differences'] = self.get_code_diff(output['repo'], output['rev'])
-        
+        output.update(self.get_commit_message(repo_name=output['repo_name'], commit_id=output['rev']))
+        output['fileChangeCounts'] = self.count_file_changes(output['repo_name'], output['rev'])
         return output
+    
+    def from_testng(self, xml_file: str):
+        with open(xml_file) as file:
+            contents = file.read()
+            return self.parse_testng_results(contents)
+    
+    def from_testng(self, testng_path: str):
+        results = {}
+        results['testResultSkipped'] = "0"
+        results['testResultfailed'] = "0"
+        results['testResultIgnored'] = "0"
+        results['testResultPassed'] = "0"
+        results['testSuiteName'] = ""
+        results['testDurationMs'] = ""
+        results['testStartedAt'] = ""
+        results['testFinishedAt'] = ""
+
+        # check if a directory exists
+        if os.path.isdir(testng_path) and os.path.isfile(f"{testng_path}/testng-results.xml"):
+            with open(f"{testng_path}/testng-results.xml") as file:
+                xml_str = file.read()
+                
+            soup = BeautifulSoup(xml_str, 'xml')
+            results = {}
+            testng = soup.find('testng-results')
+            results['testResultSkipped'] = testng['skipped']
+            results['testResultfailed'] = testng['failed']
+            results['testResultIgnored'] = testng['ignored']
+            results['testResultPassed'] = testng['passed']
+
+            # Parse test suite information
+            test_suite = soup.find('suite')
+            results['testSuiteName'] = test_suite['name']
+            results['testDurationMs'] = test_suite['duration-ms']
+            results['testStartedAt'] = test_suite['started-at']
+            results['testFinishedAt'] = test_suite['finished-at']
+
+        return results
+    
+    def from_jira(self, issue_key):
+
+        # retrieve the issue details
+        issue = self.jira.issue(issue_key)
+
+        # # get the reporter
+        reporter = issue['fields']['reporter']['displayName']
+
+        # get the last created date
+        created_date = issue['fields']['created']
+
+        # get the last edited date
+        last_edited_date = issue['fields']['updated']
+
+        # get the status
+        status = issue['fields']['status']['name']
+
+        # get the number of comments
+        comments = self.jira.issue_get_comments(issue_key)
+        num_comments = comments['total']
+
+        # # get the number of unique authors in comments
+        authors = set()
+        for comment in comments['comments']:
+            authors.add(comment['author']['displayName'])
+        num_authors = len(authors)
+
+        return {
+            "jiraReporter" : reporter,
+            "jiraCreatedDate": created_date,
+            "jiraLastEditedDate": last_edited_date,
+            "jiraStatus": status,
+            "jiraCommentNumber": num_comments,
+            "jiraCommentUniqueAuthor": num_authors
+        }
+
 
 
     def get_code_diff(self, repository_name, after_commit_id, context=3):
         """
         Returns the code diff between two commit IDs in a CodeCommit repository.
         """
+        print(repository_name)
         client = boto3.client('codecommit')
         before_commit_id = self.get_commit_before(repository_name, after_commit_id)
 
@@ -197,7 +276,6 @@ class Collector:
         Returns the number of file changes between two commit IDs in a CodeCommit repository.
         """
         client = boto3.client('codecommit')
-        
         before_commit_id = self.get_commit_before(repository_name, after_commit_id)
         
         # Get the differences between the two commit IDs
@@ -258,8 +336,4 @@ class Collector:
                     "FindingsCount": 0,
                     "PullRequestId": ""
                 }
-
-
-    
-
-        
+            
